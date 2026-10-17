@@ -40,7 +40,11 @@ Requirements and behaviour are upstream's:
 - In a RAM-capped container pass `-e LOW_RAM=on`; `setup.py` reads the host's `/proc/meminfo`, not the container limit.
 - Use `-e REINSTALL=1` to change the model settings later.
 
-Model weights are **not** baked into the image; they are downloaded at runtime. Image size is therefore dominated by the CUDA toolchain and the prebuilt engine (roughly 15 GB compressed).
+Model weights are **not** baked into the image; they are downloaded at runtime. Image size is therefore dominated by the CUDA toolchain and the prebuilt engine (several GB).
+
+### Package visibility
+
+New GHCR packages are private by default, and GitHub's REST API has no endpoint to change package visibility. If an anonymous `docker pull` is rejected, set the package to public in its [package settings](https://github.com/users/Raboo/packages/container/strata/settings) (Danger Zone → Change visibility). The `verify` job reports whether anonymous pulls work.
 
 ## How builds work
 
@@ -48,7 +52,8 @@ Model weights are **not** baked into the image; they are downloaded at runtime. 
 
 1. Every 6 hours (and on manual dispatch) resolves the latest upstream release; a dispatch can name any tag and force a rebuild.
 2. Skips the build when `ghcr.io/raboo/strata:<version>` already exists, so the schedule is idempotent.
-3. Checks out upstream at the tag, builds its `Dockerfile` as-is, and pushes the version, `v`-tag and (for the latest release) `latest`.
+3. Checks out upstream at the tag, builds its `Dockerfile` with the portability patch below, and pushes the version, `v`-tag and (for the latest release) `latest`.
+4. Verifies the pushed tags are readable in the registry (and whether anonymous pulls work, i.e. whether the package is public).
 
 ### Deliberate deviations from upstream's Dockerfile
 

@@ -213,6 +213,7 @@ jobs:
             com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: src
@@ -233,5 +234,50 @@ jobs:
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
             echo
-            echo "Digest: \`${{ steps.meta.outputs.digest }}\`"
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: Verify published image
+    needs: [resolve, build]
+    # Runs after a push, and on its own when the build was skipped because the
+    # version already exists — dispatch the workflow with the current tag to
+    # re-check a published image cheaply.
+    if: always() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inspect pushed tags
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          IS_LATEST: ${{ needs.resolve.outputs.is_latest }}
+        run: |
+          set -euo pipefail
+          refs=("$IMAGE:$VERSION" "$IMAGE:$TAG")
+          [ "$IS_LATEST" = "true" ] && refs+=("$IMAGE:latest")
+          for ref in "${refs[@]}"; do
+            echo "== $ref"
+            docker buildx imagetools inspect "$ref" | sed -n '1,12p'
+          done
+
+      - name: Check anonymous pull
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          cfg="$(mktemp -d)"
+          if DOCKER_CONFIG="$cfg" docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "Anonymous pull works; the package is public." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::The package is not publicly readable. Make it public in its settings: https://github.com/users/Raboo/packages/container/strata/settings"
+            echo "Anonymous pull failed; the package is private." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
