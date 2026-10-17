@@ -1,0 +1,237 @@
+name: Publish container image
+
+# Upstream has no release webhook we can subscribe to, so poll. Every run is a
+# no-op unless a release newer than the published images exists, or a manual
+# dispatch asks for a specific tag. GitHub disables schedules after 60 days of
+# repository inactivity; push a commit (or run manually) to re-enable.
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to build (e.g. v0.1.45). Default: latest release."
+        required: false
+        type: string
+      force:
+        description: "Rebuild even when this version is already in GHCR."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-strata
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: Niko1221/Strata
+  # GHCR paths must be lowercase; the account login is "Raboo".
+  IMAGE: ghcr.io/raboo/strata
+
+jobs:
+  resolve:
+    name: Resolve upstream release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+      is_latest: ${{ steps.release.outputs.is_latest }}
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Resolve tag, commit and release status
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          latest="$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)"
+          tag="${INPUT_TAG:-$latest}"
+
+          # Tag goes into a URL path and a shell word: accept only released-style names.
+          if ! printf '%s' "$tag" | grep -Eq '^v?[0-9][0-9A-Za-z._-]*$'; then
+            echo "::error::invalid upstream tag '$tag'"
+            exit 1
+          fi
+
+          obj="$(gh api "repos/$UPSTREAM/git/ref/tags/$tag")"
+          sha="$(printf '%s' "$obj" | jq -r .object.sha)"
+          obj_type="$(printf '%s' "$obj" | jq -r .object.type)"
+          if [ "$obj_type" = "tag" ]; then
+            sha="$(gh api "repos/$UPSTREAM/git/tags/$sha" --jq .object.sha)"
+          fi
+
+          version="${tag#v}"
+          is_latest=false
+          [ "$tag" = "$latest" ] && is_latest=true
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "is_latest=$is_latest"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Upstream release"
+            echo
+            echo "- tag: \`$tag\`"
+            echo "- commit: \`$sha\`"
+            echo "- latest release: \`$latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check whether the image is already published
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          skip=false
+
+          if [ "$FORCE" = "true" ]; then
+            echo "Force requested; rebuilding $IMAGE:$VERSION."
+          else
+            echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+            if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+              skip=true
+              echo "$IMAGE:$VERSION already exists; nothing to do."
+            else
+              echo "$IMAGE:$VERSION does not exist yet; it will be built."
+            fi
+          fi
+
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "- publish: \`$([ "$skip" = true ] && echo no || echo yes)\`" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build and push ${{ needs.resolve.outputs.tag }}
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      # The CUDA devel base alone is ~10 GB unpacked and the engine build needs
+      # several more; a stock runner does not have enough free space.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/share/swift \
+            /usr/local/.ghcup \
+            /opt/az \
+            /usr/lib/jvm
+          sudo apt-get clean
+          sudo docker image prune -af
+          df -h /
+
+      - name: Check out upstream at the release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Niko1221/Strata
+          ref: ${{ needs.resolve.outputs.tag }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Upstream builds native code for the machine that builds the image. A
+      # GitHub runner may have AVX-512, which would make the published image die
+      # with SIGILL on AVX2-only CPUs (the entry point advertises AVX2 as the
+      # floor). STRATA_PORTABLE=ON pins ggml to an AVX2 baseline. Upstream's
+      # vision build already defaults to ON but its Dockerfile forces OFF.
+      # Fail loudly if upstream changes these lines instead of silently shipping
+      # a native image.
+      - name: Pin the CPU baseline to AVX2
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/Dockerfile")
+          text = path.read_text()
+
+          engine = '["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",'
+          vision = '"STRATA_VISION_CUDA=ON", "STRATA_PORTABLE=OFF"'
+
+          if engine not in text or vision not in text:
+              raise SystemExit(
+                  "Dockerfile build flags changed upstream; update the STRATA_PORTABLE patch in .github/workflows/publish.yml"
+              )
+
+          text = text.replace(
+              engine,
+              '["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_PORTABLE=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",',
+              1,
+          )
+          text = text.replace(vision, '"STRATA_VISION_CUDA=ON", "STRATA_PORTABLE=ON"', 1)
+          path.write_text(text)
+          PY
+          grep -n 'STRATA_PORTABLE' src/Dockerfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ needs.resolve.outputs.version }}
+            type=raw,value=${{ needs.resolve.outputs.tag }}
+            type=raw,value=latest,enable=${{ needs.resolve.outputs.is_latest }}
+          labels: |
+            org.opencontainers.image.title=Strata
+            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for NVIDIA GPUs, built from upstream source
+            org.opencontainers.image.url=https://github.com/Niko1221/Strata
+            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata#readme
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
+            org.opencontainers.image.licenses=MIT
+            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: src
+          file: src/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+
+      - name: Summary
+        run: |
+          {
+            echo
+            echo "### Published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.meta.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
