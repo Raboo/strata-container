@@ -103,11 +103,12 @@ Scheduled workflows in public repositories are disabled after 60 days without a 
 gh workflow run publish.yml --repo raboo/strata-container -f tag=v0.1.45 -f force=true
 ```
 
-`force` rebuilds all three variants. To rebuild one locally:
+`force` rebuilds all three variants. To build one locally, use an upstream checkout as the build context:
 
 ```sh
-docker build -f docker/Dockerfile.rocm -t strata-rocm .
-docker build -f docker/Dockerfile.sycl -t strata-sycl .
+git clone --depth 1 --branch v0.1.45 https://github.com/Niko1221/Strata.git /tmp/strata
+docker build -f docker/Dockerfile.rocm -t strata-rocm /tmp/strata
+docker build -f docker/Dockerfile.sycl -t strata-sycl /tmp/strata
 ```
 
 ## License
