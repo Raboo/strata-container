@@ -1,0 +1,74 @@
+name: Keep scheduled workflows enabled
+
+# GitHub disables scheduled workflows in public repositories after 60 days
+# without a commit. A workflow run does not count, but a commit does. This
+# lands one commit when the newest commit is older than 50 days, so publish.yml
+# keeps polling upstream even when releases are quiet.
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Commit even when the last commit is recent."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    name: Commit a keepalive marker when stale
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check repository activity
+        id: activity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          last="$(gh api "repos/$GITHUB_REPOSITORY/commits?per_page=1" --jq '.[0].commit.committer.date')"
+          age=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 86400 ))
+          echo "Newest commit: $last (${age} days ago)"
+
+          if [ "$FORCE" != "true" ] && [ "$age" -lt 50 ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit keepalive marker
+        if: steps.activity.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/$GITHUB_REPOSITORY/contents/.github/keepalive"
+          stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          for attempt in 1 2 3; do
+            sha="$(gh api "$api" --jq .sha 2>/dev/null || true)"
+            content="$(printf 'Last keepalive: %s\n' "$stamp" | base64 | tr -d '\n')"
+            args=(-X PUT "$api" -f message="Keepalive $stamp" -f content="$content" -f branch=main)
+            [ -n "$sha" ] && args+=(-f sha="$sha")
+
+            if gh api "${args[@]}" >/dev/null; then
+              echo "Committed keepalive marker for $stamp."
+              exit 0
+            fi
+
+            echo "Push conflict on attempt $attempt; retrying."
+            sleep $((attempt * 2))
+          done
+
+          echo "::error::could not commit the keepalive marker"
+          exit 1

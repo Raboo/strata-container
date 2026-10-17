@@ -8,6 +8,10 @@ Upstream ships a [`Dockerfile`](https://github.com/Niko1221/Strata/blob/main/Doc
 ghcr.io/raboo/strata
 ```
 
+<!-- latest-release -->
+Current image: `ghcr.io/raboo/strata:0.1.44` (upstream release `v0.1.44`)
+<!-- /latest-release -->
+
 ## Tags
 
 | Tag | Meaning |
@@ -54,6 +58,9 @@ New GHCR packages are private by default, and GitHub's REST API has no endpoint 
 2. Skips the build when `ghcr.io/raboo/strata:<version>` already exists, so the schedule is idempotent.
 3. Checks out upstream at the tag, builds its `Dockerfile` with the portability patch below, and pushes the version, `v`-tag and (for the latest release) `latest`.
 4. Verifies the pushed tags are readable in the registry (and whether anonymous pulls work, i.e. whether the package is public).
+5. For the latest release, updates the version marker at the top of this README and commits it.
+
+Scheduled workflows in public repositories are disabled after 60 days without a commit (the scheduled run itself does not count). `.github/workflows/keepalive.yml` runs weekly and commits a marker when the last commit is older than 50 days, so the release poll stays enabled even if upstream goes quiet; release builds also commit the README marker. Re-enable a disabled workflow from the Actions tab if it was off for longer than that.
 
 ### Deliberate deviations from upstream's Dockerfile
 
