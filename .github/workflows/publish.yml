@@ -183,6 +183,52 @@ jobs:
           PY
           grep -n 'STRATA_PORTABLE' src/Dockerfile
 
+      # Upstream's entry point does not forward --draft-vocab, the draft
+      # layer's token subset (cjk is the default, 348 MiB; en is 133 MiB).
+      # Expose it as DRAFT_VOCAB for both the setup and the start pass; setup
+      # stores the choice in the model config, so it survives restarts.
+      - name: Forward DRAFT_VOCAB through the entry point
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/docker-entrypoint.sh")
+          text = path.read_text()
+
+          config_anchor = 'CONFIG="${CONFIG:-}"'
+          setup_anchor = '  if [ -n "$KV" ]; then set -- "$@" --kv "$KV"; fi'
+          start_anchor = 'set -- --port "$PORT"\n'
+
+          if config_anchor not in text or setup_anchor not in text or start_anchor not in text:
+              raise SystemExit(
+                  "docker-entrypoint.sh changed upstream; update the DRAFT_VOCAB patch in .github/workflows/publish.yml"
+              )
+
+          lines = text.splitlines(keepends=True)
+          for i, line in enumerate(lines):
+              if line.startswith('CONFIG="${CONFIG:-}"'):
+                  lines.insert(i + 1, '\nDRAFT_VOCAB="${DRAFT_VOCAB:-}"    # en | cyrillic | fr | cjk: the draft layer token subset\n')
+                  break
+          else:
+              raise SystemExit(
+                  "docker-entrypoint.sh changed upstream; update the DRAFT_VOCAB patch in .github/workflows/publish.yml"
+              )
+          text = "".join(lines)
+          text = text.replace(
+              setup_anchor,
+              setup_anchor + '\n  if [ -n "$DRAFT_VOCAB" ]; then set -- "$@" --draft-vocab "$DRAFT_VOCAB"; fi',
+              1,
+          )
+          text = text.replace(
+              start_anchor,
+              start_anchor + 'if [ -n "$DRAFT_VOCAB" ]; then set -- "$@" --draft-vocab "$DRAFT_VOCAB"; fi\n',
+              1,
+          )
+          path.write_text(text)
+          PY
+          grep -n 'DRAFT_VOCAB' src/docker-entrypoint.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 

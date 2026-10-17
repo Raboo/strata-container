@@ -70,6 +70,7 @@ The first start downloads the model (~70 GB) into the data volume and then serve
 - Setup choices are environment variables (`FAMILY`, `MODEL`, `CONTEXT`, `KV`, `HOST`, `PORT`, `API_KEY`, `GGUF_DIR`, ...). See the upstream Dockerfile header for the full CUDA list; the AMD and SYCL images pass the same core variables.
 - Set `-e API_KEY=<secret>` before exposing the port.
 - `-e REINSTALL=1` re-runs setup to change model settings.
+- `-e DRAFT_VOCAB=en` selects the draft layer's token subset. The default `cjk` needs up to ~348 MiB of VRAM; `en` (English and code) needs ~133 MiB, `cyrillic` ~193 MiB, `fr` ~151 MiB. The choice is stored in the model config and reused on later starts; models without an MTP draft layer ignore it.
 - Model weights are **not** baked into the images; they are downloaded at runtime.
 
 ### macOS

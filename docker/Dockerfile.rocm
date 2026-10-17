@@ -83,6 +83,43 @@ PYEOF
 
 RUN rm -rf build-hip
 
+# Upstream's entry point has no --draft-vocab switch. Expose the draft layer's
+# token subset as DRAFT_VOCAB (en | cyrillic | fr | cjk); setup stores the
+# choice in the model config, so it survives restarts.
+RUN python3 - <<'PYEOF'
+from pathlib import Path
+
+path = Path("docker-entrypoint.sh")
+text = path.read_text()
+
+config_anchor = 'CONFIG="${CONFIG:-}"'
+setup_anchor = '  if [ -n "$KV" ]; then set -- "$@" --kv "$KV"; fi'
+start_anchor = 'set -- --port "$PORT"\n'
+
+if config_anchor not in text or setup_anchor not in text or start_anchor not in text:
+    raise SystemExit("docker-entrypoint.sh changed upstream; update the DRAFT_VOCAB patch in docker/Dockerfile.rocm")
+
+lines = text.splitlines(keepends=True)
+for i, line in enumerate(lines):
+    if line.startswith('CONFIG="${CONFIG:-}"'):
+        lines.insert(i + 1, '\nDRAFT_VOCAB="${DRAFT_VOCAB:-}"    # en | cyrillic | fr | cjk: the draft layer token subset\n')
+        break
+else:
+    raise SystemExit("docker-entrypoint.sh changed upstream; update the DRAFT_VOCAB patch in docker/Dockerfile.rocm")
+text = "".join(lines)
+text = text.replace(
+    setup_anchor,
+    setup_anchor + '\n  if [ -n "$DRAFT_VOCAB" ]; then set -- "$@" --draft-vocab "$DRAFT_VOCAB"; fi',
+    1,
+)
+text = text.replace(
+    start_anchor,
+    start_anchor + 'if [ -n "$DRAFT_VOCAB" ]; then set -- "$@" --draft-vocab "$DRAFT_VOCAB"; fi\n',
+    1,
+)
+path.write_text(text)
+PYEOF
+
 VOLUME ["/data"]
 EXPOSE 8080
 

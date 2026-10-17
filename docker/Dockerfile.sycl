@@ -79,6 +79,7 @@ RUN printf '%s\n' \
       'HOST="${HOST:-0.0.0.0}"' \
       'PORT="${PORT:-8080}"' \
       'API_KEY="${API_KEY:-}"' \
+      'DRAFT_VOCAB="${DRAFT_VOCAB:-}"' \
       '' \
       '# The port keeps experts in VRAM and streams the rest from the GGUF.' \
       'export STRATA_SYCL_ROOT=/work STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1 STRATA_STAGER_THREADS=12' \
@@ -91,14 +92,18 @@ RUN printf '%s\n' \
       '' \
       'if [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then' \
       '  echo "Setting up $tag (the SYCL engine is already built in this image)."' \
-      '  .venv/bin/python setup.py --backend sycl --setup --yes \' \
+      '  set -- --backend sycl --setup --yes \' \
       '      --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" \' \
       '      --data-dir "$DATA" --host "$HOST" --port "$PORT" --api-key "$API_KEY" --no-start' \
+      '  [ -n "$DRAFT_VOCAB" ] && set -- "$@" --draft-vocab "$DRAFT_VOCAB"' \
+      '  .venv/bin/python setup.py "$@"' \
       '  [ -f "/work/strata/strata-$tag.json" ] && cp -f "/work/strata/strata-$tag.json" "$cfg"' \
       'fi' \
       'ln -sfn "$cfg" "$link"' \
       '' \
-      'exec .venv/bin/python setup.py --backend sycl --port "$PORT"' \
+      'set -- --backend sycl --port "$PORT"' \
+      '[ -n "$DRAFT_VOCAB" ] && set -- "$@" --draft-vocab "$DRAFT_VOCAB"' \
+      'exec .venv/bin/python setup.py "$@"' \
       > /usr/local/bin/strata-entrypoint \
     && chmod +x /usr/local/bin/strata-entrypoint
 
