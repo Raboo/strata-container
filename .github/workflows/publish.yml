@@ -166,7 +166,7 @@ jobs:
           text = path.read_text()
 
           engine = '["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",'
-          vision = '"STRATA_VISION_CUDA=ON", "STRATA_PORTABLE=OFF"'
+          vision = '"-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF"'
 
           if engine not in text or vision not in text:
               raise SystemExit(
@@ -178,7 +178,7 @@ jobs:
               '["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_PORTABLE=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DSTRATA_BUILD_TESTS=OFF",',
               1,
           )
-          text = text.replace(vision, '"STRATA_VISION_CUDA=ON", "STRATA_PORTABLE=ON"', 1)
+          text = text.replace(vision, '"-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=ON"', 1)
           path.write_text(text)
           PY
           grep -n 'STRATA_PORTABLE' src/Dockerfile
