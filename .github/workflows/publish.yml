@@ -114,7 +114,7 @@ jobs:
           echo "- publish: \`$([ "$skip" = true ] && echo no || echo yes)\`" >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: Build and push ${{ needs.resolve.outputs.tag }}
+    name: Build and push ${{ needs.resolve.outputs.tag }} (CUDA)
     needs: resolve
     if: needs.resolve.outputs.skip != 'true'
     runs-on: ubuntu-latest
@@ -237,13 +237,246 @@ jobs:
             echo "Digest: \`${{ steps.build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  build-rocm:
+    name: Build and push ${{ needs.resolve.outputs.tag }} (ROCm)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Check whether this variant is already published
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          if [ "$FORCE" != "true" ] && docker manifest inspect "$IMAGE:$VERSION-rocm" >/dev/null 2>&1; then
+            echo "$IMAGE:$VERSION-rocm already exists; skipping."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk space
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/share/swift \
+            /usr/local/.ghcup \
+            /opt/az \
+            /usr/lib/jvm
+          sudo apt-get clean
+          sudo docker image prune -af
+          df -h /
+
+      - name: Check out this repository
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out upstream at the release tag
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Niko1221/Strata
+          ref: ${{ needs.resolve.outputs.tag }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ needs.resolve.outputs.version }}-rocm
+            type=raw,value=${{ needs.resolve.outputs.tag }}-rocm
+            type=raw,value=latest-rocm,enable=${{ needs.resolve.outputs.is_latest }}
+          labels: |
+            org.opencontainers.image.title=Strata (ROCm)
+            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for AMD Radeon through HIP
+            org.opencontainers.image.url=https://github.com/Niko1221/Strata
+            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata/blob/main/docs/AMD_HIP.md
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
+            org.opencontainers.image.licenses=MIT
+            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
+            com.github.strata.backend=hip
+
+      - name: Build and push
+        id: build
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: src
+          file: ${{ github.workspace }}/docker/Dockerfile.rocm
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+
+      - name: Summary
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          {
+            echo
+            echo "### Published (ROCm)"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-sycl:
+    name: Build and push ${{ needs.resolve.outputs.tag }} (SYCL)
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Check whether this variant is already published
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          if [ "$FORCE" != "true" ] && docker manifest inspect "$IMAGE:$VERSION-sycl" >/dev/null 2>&1; then
+            echo "$IMAGE:$VERSION-sycl already exists; skipping."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free disk space
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /usr/share/swift \
+            /usr/local/.ghcup \
+            /opt/az \
+            /usr/lib/jvm
+          sudo apt-get clean
+          sudo docker image prune -af
+          df -h /
+
+      - name: Check out this repository
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out upstream at the release tag
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Niko1221/Strata
+          ref: ${{ needs.resolve.outputs.tag }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ needs.resolve.outputs.version }}-sycl
+            type=raw,value=${{ needs.resolve.outputs.tag }}-sycl
+            type=raw,value=latest-sycl,enable=${{ needs.resolve.outputs.is_latest }}
+          labels: |
+            org.opencontainers.image.title=Strata (SYCL)
+            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for Intel Arc through the experimental SYCL port
+            org.opencontainers.image.url=https://github.com/Niko1221/Strata
+            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata/blob/main/docs/INTEL_ARC.md
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
+            org.opencontainers.image.licenses=MIT
+            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
+            com.github.strata.backend=sycl
+
+      - name: Build and push
+        id: build
+        if: steps.check.outputs.exists != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: src
+          file: ${{ github.workspace }}/docker/Dockerfile.sycl
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+
+      - name: Summary
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          {
+            echo
+            echo "### Published (SYCL)"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   verify:
-    name: Verify published image
-    needs: [resolve, build]
-    # Runs after a push, and on its own when the build was skipped because the
-    # version already exists — dispatch the workflow with the current tag to
-    # re-check a published image cheaply.
-    if: always() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    name: Verify published images
+    needs: [resolve, build, build-rocm, build-sycl]
+    # Runs after the builds, and on its own when every variant was already
+    # published — dispatch the workflow with the current tag to re-check cheaply.
+    if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -254,32 +487,52 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Inspect pushed tags
+      - name: Inspect published tags
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           TAG: ${{ needs.resolve.outputs.tag }}
           IS_LATEST: ${{ needs.resolve.outputs.is_latest }}
         run: |
           set -euo pipefail
-          refs=("$IMAGE:$VERSION" "$IMAGE:$TAG")
-          [ "$IS_LATEST" = "true" ] && refs+=("$IMAGE:latest")
-          for ref in "${refs[@]}"; do
-            echo "== $ref"
-            docker buildx imagetools inspect "$ref" | sed -n '1,12p'
+          missing=0
+          for suffix in "" "-rocm" "-sycl"; do
+            case "$suffix" in
+              "") latest_ref="$IMAGE:latest" ;;
+              *) latest_ref="$IMAGE:latest$suffix" ;;
+            esac
+            refs=("$IMAGE:$VERSION$suffix" "$IMAGE:$TAG$suffix")
+            [ "$IS_LATEST" = "true" ] && refs+=("$latest_ref")
+            for ref in "${refs[@]}"; do
+              if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+                echo "== $ref"
+                docker buildx imagetools inspect "$ref" | sed -n '1,10p'
+              else
+                echo "::warning::$ref is missing"
+                missing=1
+              fi
+            done
           done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::one or more expected image tags are missing"
+            exit 1
+          fi
 
-      - name: Check anonymous pull
+      - name: Check anonymous pulls
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           cfg="$(mktemp -d)"
-          if DOCKER_CONFIG="$cfg" docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
-            echo "Anonymous pull works; the package is public." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::The package is not publicly readable. Make it public in its settings: https://github.com/users/Raboo/packages/container/strata/settings"
-            echo "Anonymous pull failed; the package is private." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          public=1
+          for suffix in "" "-rocm" "-sycl"; do
+            if DOCKER_CONFIG="$cfg" docker buildx imagetools inspect "$IMAGE:$VERSION$suffix" >/dev/null 2>&1; then
+              echo "$IMAGE:$VERSION$suffix: anonymous pull works"
+            else
+              public=0
+              echo "::warning::$IMAGE:$VERSION$suffix is not publicly readable. Make the package public in its settings: https://github.com/users/Raboo/packages/container/strata/settings"
+            fi
+          done
+          echo "anonymous pulls work: $([ "$public" = 1 ] && echo yes || echo no)" >> "$GITHUB_STEP_SUMMARY"
 
   update-readme:
     name: Record latest release in README

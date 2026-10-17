@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+#
+# Strata for AMD Radeon through the HIP backend. Built from upstream's own
+# HIP build flags (setup.py: build_engine_hip) because upstream has no ROCm
+# Dockerfile. The CUDA entry point, data volume and health check are reused
+# unchanged: setup.py sees a prebuilt HIP engine in engine/BUILD.json and only
+# downloads the model on the first start.
+#
+# Build:
+#   docker build -f docker/Dockerfile.rocm -t strata-rocm .
+#   docker build -f docker/Dockerfile.rocm --build-arg HIP_ARCHITECTURES=gfx1201 -t strata-rocm .
+#
+# Run (host needs the amdgpu kernel driver; no ROCm install, the image has it):
+#   docker run --rm \
+#     --device /dev/kfd --device /dev/dri \
+#     --group-add video --group-add render \
+#     -p 8080:8080 --ulimit memlock=-1 \
+#     -v strata-data:/data -e MODEL=IQ2_XS \
+#     strata-rocm
+
+FROM rocm/dev-ubuntu-24.04:7.2.4
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 LANG=C.UTF-8 STRATA_EXECV=1 \
+    ROCM_PATH=/opt/rocm HIP_PLATFORM=amd HIP_COMPILER=clang HIP_RUNTIME=rocclr \
+    PATH=/opt/rocm/llvm/bin:/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LD_LIBRARY_PATH=/opt/rocm/lib
+
+# rocm-dev (the base image) carries hipcc and the HIP runtime but not the math
+# libraries; the engine links hipBLAS and rocBLAS, and hipBLASLt optionally.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl libatomic1 libgomp1 \
+        python3 python3-pip python3-venv unzip \
+        hipblas-dev rocblas-dev hipblaslt-dev rocminfo \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/strata
+COPY . .
+
+# RDNA2/RDNA3/RDNA4 cards upstream validates or ships code for. The engine is a
+# fat binary; the HIP runtime loads the code object for the installed card.
+ARG HIP_ARCHITECTURES=gfx1100;gfx1101;gfx1200;gfx1201;gfx1030
+
+RUN python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir --upgrade pip \
+    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && chmod +x setup.sh docker-entrypoint.sh
+
+RUN .venv/bin/python - <<'PYEOF'
+import json, os, pathlib, shutil
+import setup
+
+llama = setup.get_llama_cpp()
+root = pathlib.Path(os.environ.get("ROCM_PATH", "/opt/rocm"))
+archs = [a.strip() for a in os.environ.get(
+    "HIP_ARCHITECTURES", "gfx1100;gfx1101;gfx1200;gfx1201;gfx1030").replace(",", ";").split(";") if a.strip()]
+bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
+               root / "amdgcn" / "bitcode")
+
+setup.cmake_build(setup.ROOT, setup.ROOT / "build-hip", "strata",
+    ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
+     "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
+     "-DSTRATA_PORTABLE=ON",
+     "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+     f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}",
+     f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+     f"-DCMAKE_PREFIX_PATH={root}",
+     f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
+     f"-DSTRATA_GGML_DIR={llama}"], None, "")
+
+eng = setup.ROOT / "engine"
+eng.mkdir(exist_ok=True)
+shutil.copy2(setup.ROOT / "build-hip" / setup.EXE, eng / setup.EXE)
+if (setup.ROOT / "build-hip" / setup.KQ_LIB).exists():
+    shutil.copy2(setup.ROOT / "build-hip" / setup.KQ_LIB, eng / setup.KQ_LIB)
+
+# What setup.py reads to decide the engine is current: source=local-hip and a
+# matching source hash make the first start reuse it instead of recompiling.
+meta = {"source": "local-hip", "backend": "hip", "version": setup.source_version(),
+        "archs": archs, "vision": "none", "lib_dirs": [str(root / "lib")],
+        "src": setup.source_hash(setup.ENGINE_SOURCES)}
+(eng / "BUILD.json").write_text(json.dumps(meta, indent=1))
+PYEOF
+
+RUN rm -rf build-hip
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+  CMD curl -fs "http://127.0.0.1:${PORT:-8080}/health" || exit 1
+
+ENTRYPOINT ["./docker-entrypoint.sh"]
