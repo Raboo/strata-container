@@ -284,13 +284,20 @@ jobs:
   update-readme:
     name: Record latest release in README
     needs: [resolve, verify]
-    if: needs.verify.result == 'success' && needs.resolve.outputs.is_latest == 'true'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
+      - name: Report context
+        run: |
+          echo "is_latest=${{ needs.resolve.outputs.is_latest }}"
+          echo "verify=${{ needs.verify.result }}"
+          echo "version=${{ needs.resolve.outputs.version }}"
+
       - name: Update the release marker
+        if: needs.resolve.outputs.is_latest == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve.outputs.version }}
