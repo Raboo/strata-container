@@ -36,9 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/strata
 COPY . .
 
-# RDNA2/RDNA3/RDNA4 cards upstream validates or ships code for. The engine is a
-# fat binary; the HIP runtime loads the code object for the installed card.
-ARG HIP_ARCHITECTURES=gfx1100;gfx1101;gfx1200;gfx1201;gfx1030
+# RDNA2/RDNA3/RDNA3.5/RDNA4 cards upstream validates or ships code for
+# (gfx1151 is the Strix Halo APU). The engine is a fat binary; the HIP runtime
+# loads the code object for the installed card.
+ARG HIP_ARCHITECTURES=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx1151
 
 RUN python3 -m venv .venv \
     && .venv/bin/pip install --no-cache-dir --upgrade pip \
@@ -52,7 +53,7 @@ import setup
 llama = setup.get_llama_cpp()
 root = pathlib.Path(os.environ.get("ROCM_PATH", "/opt/rocm"))
 archs = [a.strip() for a in os.environ.get(
-    "HIP_ARCHITECTURES", "gfx1100;gfx1101;gfx1200;gfx1201;gfx1030").replace(",", ";").split(";") if a.strip()]
+    "HIP_ARCHITECTURES", "gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx1151").replace(",", ";").split(";") if a.strip()]
 bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
                root / "amdgcn" / "bitcode")
 
