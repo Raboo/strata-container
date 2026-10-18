@@ -81,7 +81,7 @@ These edit the model config before the server starts, so they persist on later s
 | --- | --- |
 | `PREFILL` | `--prefill <value>` in `args` (`auto`, `auto:32768`, `2048`, ...) |
 | `CONVERSATION_CACHE_MIB` | `--conversation-cache-mib <MiB>` in `args` (positive integer, added if absent) |
-| `FIT_MAX_TOKENS` | top-level `"fit_max_tokens": true|false` |
+| `FIT_MAX_TOKENS` | top-level `"fit_max_tokens": true` or `false` |
 | `SAMPLING_TEMPERATURE` | `sampling.temperature` (number >= 0) |
 | `SAMPLING_TOP_P` | `sampling.top_p` (0 < value <= 1) |
 | `SAMPLING_TOP_K` | `sampling.top_k` (integer 1..64) |
