@@ -226,7 +226,9 @@ jobs:
           override = (
               '# Wrapper overrides: PREFILL, CONVERSATION_CACHE_MIB, FIT_MAX_TOKENS.\n'
               'if [ -n "${PREFILL:-}" ] || [ -n "${CONVERSATION_CACHE_MIB:-}" ] || [ -n "${FIT_MAX_TOKENS:-}" ]; then\n'
-              '  .venv/bin/python /opt/strata/strata-env-config.py "${CONFIG:-$cfg}"\n'
+              '  target="${CONFIG:-$(readlink -f "$link" 2>/dev/null || true)}"\n'
+              '  [ -n "$target" ] || target="$cfg"\n'
+              '  .venv/bin/python /opt/strata/strata-env-config.py "$target"\n'
               'fi\n\n'
           )
           text = text.replace(start_anchor, override + start_anchor, 1)
