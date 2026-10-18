@@ -101,9 +101,8 @@ RUN printf '%s\n' \
       'fi' \
       'ln -sfn "$cfg" "$link"' \
       '' \
-      'if [ -n "${PREFILL:-}" ] || [ -n "${CONVERSATION_CACHE_MIB:-}" ] || [ -n "${FIT_MAX_TOKENS:-}" ]; then' \
-      '  .venv/bin/python /work/strata/strata-env-config.py "$cfg"' \
-      'fi' \
+      '# Wrapper config overrides: PREFILL, CONVERSATION_CACHE_MIB, FIT_MAX_TOKENS, SAMPLING_*.' \
+      '.venv/bin/python /work/strata/strata-env-config.py "$cfg"' \
       '' \
       'set -- --backend sycl --port "$PORT"' \
       '[ -n "$DRAFT_VOCAB" ] && set -- "$@" --draft-vocab "$DRAFT_VOCAB"' \

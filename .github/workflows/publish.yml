@@ -224,12 +224,18 @@ jobs:
               )
           text = "".join(lines)
           override = (
-              '# Wrapper overrides: PREFILL, CONVERSATION_CACHE_MIB, FIT_MAX_TOKENS.\n'
-              'if [ -n "${PREFILL:-}" ] || [ -n "${CONVERSATION_CACHE_MIB:-}" ] || [ -n "${FIT_MAX_TOKENS:-}" ]; then\n'
-              '  target="${CONFIG:-$(readlink -f "$link" 2>/dev/null || true)}"\n'
-              '  [ -n "$target" ] || target="$cfg"\n'
-              '  .venv/bin/python /opt/strata/strata-env-config.py "$target"\n'
-              'fi\n\n'
+              '# Wrapper config overrides: PREFILL, CONVERSATION_CACHE_MIB, FIT_MAX_TOKENS, SAMPLING_*.\n'
+              'target="${CONFIG:-}"\n'
+              'if [ -z "$target" ]; then\n'
+              '  if [ "${keep:-}" = "1" ]; then\n'
+              '    target="$(readlink -f "$link" 2>/dev/null || true)"\n'
+              '    [ -n "$target" ] || target="$cfg"\n'
+              '  else\n'
+              '    ln -sfn "$cfg" "$link"\n'
+              '    target="$cfg"\n'
+              '  fi\n'
+              'fi\n'
+              '.venv/bin/python /opt/strata/strata-env-config.py "$target"\n\n'
           )
           text = text.replace(start_anchor, override + start_anchor, 1)
           text = text.replace(

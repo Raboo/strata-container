@@ -82,12 +82,31 @@ These edit the model config before the server starts, so they persist on later s
 | `PREFILL` | `--prefill <value>` in `args` (`auto`, `auto:32768`, `2048`, ...) |
 | `CONVERSATION_CACHE_MIB` | `--conversation-cache-mib <MiB>` in `args` (positive integer, added if absent) |
 | `FIT_MAX_TOKENS` | top-level `"fit_max_tokens": true|false` |
+| `SAMPLING_TEMPERATURE` | `sampling.temperature` (number >= 0) |
+| `SAMPLING_TOP_P` | `sampling.top_p` (0 < value <= 1) |
+| `SAMPLING_TOP_K` | `sampling.top_k` (integer 1..64) |
+| `SAMPLING_MIN_P` | `sampling.min_p` (0 <= value <= 1) |
+| `SAMPLING_PRESENCE_PENALTY` | `sampling.presence_penalty` (number >= 0) |
+| `SAMPLING_REPETITION_PENALTY` | `sampling.repetition_penalty` (number > 0; 1 = off) |
+| `SAMPLING_FREQUENCY_PENALTY` | `sampling.frequency_penalty` (number >= 0) |
+| `SAMPLING_PENALTY_LAST_N` | `sampling.penalty_last_n` (integer >= 0) |
+| `SAMPLING_SEED` | `sampling.seed` (integer > 0) |
 
 ```sh
-docker run ... -e PREFILL=auto:32768 -e CONVERSATION_CACHE_MIB=8192 -e FIT_MAX_TOKENS=true ...
+docker run ... \
+  -e PREFILL=auto:32768 \
+  -e CONVERSATION_CACHE_MIB=8192 \
+  -e FIT_MAX_TOKENS=true \
+  -e SAMPLING_TEMPERATURE=1.0 \
+  -e SAMPLING_TOP_P=0.95 \
+  -e SAMPLING_TOP_K=20 \
+  -e SAMPLING_MIN_P=0.0 \
+  -e SAMPLING_PRESENCE_PENALTY=0.0 \
+  -e SAMPLING_REPETITION_PENALTY=1.0 \
+  ghcr.io/raboo/strata:latest
 ```
 
-Invalid values fail the container start with the expected form. The helper is `docker/strata-env-config.py`; it is injected into the build context and called by each entrypoint.
+Sampling values are defaults for requests that leave the field out; a request's own value still wins. Invalid values fail the container start with the expected range. Aliases `repeat_penalty` / `repeat_last_n` are replaced by the canonical keys when overridden.
 
 ### macOS
 
