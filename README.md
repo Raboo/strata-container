@@ -73,6 +73,22 @@ The first start downloads the model (~70 GB) into the data volume and then serve
 - `-e DRAFT_VOCAB=en` selects the draft layer's token subset. The default `cjk` needs up to ~348 MiB of VRAM; `en` (English and code) needs ~133 MiB, `cyrillic` ~193 MiB, `fr` ~151 MiB. The choice is stored in the model config and reused on later starts; models without an MTP draft layer ignore it.
 - Model weights are **not** baked into the images; they are downloaded at runtime.
 
+### Wrapper-only overrides
+
+These edit the model config before the server starts, so they persist on later starts (unset them to keep the last value):
+
+| Variable | Config effect |
+| --- | --- |
+| `PREFILL` | `--prefill <value>` in `args` (`auto`, `auto:32768`, `2048`, ...) |
+| `CONVERSATION_CACHE_MIB` | `--conversation-cache-mib <MiB>` in `args` (positive integer, added if absent) |
+| `FIT_MAX_TOKENS` | top-level `"fit_max_tokens": true|false` |
+
+```sh
+docker run ... -e PREFILL=auto:32768 -e CONVERSATION_CACHE_MIB=8192 -e FIT_MAX_TOKENS=true ...
+```
+
+Invalid values fail the container start with the expected form. The helper is `docker/strata-env-config.py`; it is injected into the build context and called by each entrypoint.
+
 ### macOS
 
 There is no Mac image, and GitHub Actions cannot make one. Containers are Linux; Docker on macOS runs them in a VM without Metal GPU passthrough, and macOS itself is not a container target. Upstream's Apple Silicon support is a native build (`metal/setup_mac.py`), not an image.
@@ -107,6 +123,7 @@ gh workflow run publish.yml --repo raboo/strata-container -f tag=v0.1.45 -f forc
 
 ```sh
 git clone --depth 1 --branch v0.1.45 https://github.com/Niko1221/Strata.git /tmp/strata
+cp docker/strata-env-config.py /tmp/strata/
 docker build -f docker/Dockerfile.rocm -t strata-rocm /tmp/strata
 docker build -f docker/Dockerfile.sycl -t strata-sycl /tmp/strata
 ```

@@ -107,6 +107,13 @@ for i, line in enumerate(lines):
 else:
     raise SystemExit("docker-entrypoint.sh changed upstream; update the DRAFT_VOCAB patch in docker/Dockerfile.rocm")
 text = "".join(lines)
+override = (
+    '# Wrapper overrides: PREFILL, CONVERSATION_CACHE_MIB, FIT_MAX_TOKENS.\n'
+    'if [ -n "${PREFILL:-}" ] || [ -n "${CONVERSATION_CACHE_MIB:-}" ] || [ -n "${FIT_MAX_TOKENS:-}" ]; then\n'
+    '  .venv/bin/python /opt/strata/strata-env-config.py "${CONFIG:-$cfg}"\n'
+    'fi\n\n'
+)
+text = text.replace(start_anchor, override + start_anchor, 1)
 text = text.replace(
     setup_anchor,
     setup_anchor + '\n  if [ -n "$DRAFT_VOCAB" ]; then set -- "$@" --draft-vocab "$DRAFT_VOCAB"; fi',

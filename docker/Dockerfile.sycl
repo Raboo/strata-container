@@ -101,6 +101,10 @@ RUN printf '%s\n' \
       'fi' \
       'ln -sfn "$cfg" "$link"' \
       '' \
+      'if [ -n "${PREFILL:-}" ] || [ -n "${CONVERSATION_CACHE_MIB:-}" ] || [ -n "${FIT_MAX_TOKENS:-}" ]; then' \
+      '  .venv/bin/python /work/strata/strata-env-config.py "$cfg"' \
+      'fi' \
+      '' \
       'set -- --backend sycl --port "$PORT"' \
       '[ -n "$DRAFT_VOCAB" ] && set -- "$@" --draft-vocab "$DRAFT_VOCAB"' \
       'exec .venv/bin/python setup.py "$@"' \

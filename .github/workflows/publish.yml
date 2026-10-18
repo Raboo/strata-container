@@ -140,6 +140,11 @@ jobs:
           sudo docker image prune -af
           df -h /
 
+      - name: Check out this repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
       - name: Check out upstream at the release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -148,6 +153,9 @@ jobs:
           path: src
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Add the wrapper config helper
+        run: cp docker/strata-env-config.py src/
 
       # Upstream builds native code for the machine that builds the image. A
       # GitHub runner may have AVX-512, which would make the published image die
@@ -215,6 +223,13 @@ jobs:
                   "docker-entrypoint.sh changed upstream; update the DRAFT_VOCAB patch in .github/workflows/publish.yml"
               )
           text = "".join(lines)
+          override = (
+              '# Wrapper overrides: PREFILL, CONVERSATION_CACHE_MIB, FIT_MAX_TOKENS.\n'
+              'if [ -n "${PREFILL:-}" ] || [ -n "${CONVERSATION_CACHE_MIB:-}" ] || [ -n "${FIT_MAX_TOKENS:-}" ]; then\n'
+              '  .venv/bin/python /opt/strata/strata-env-config.py "${CONFIG:-$cfg}"\n'
+              'fi\n\n'
+          )
+          text = text.replace(start_anchor, override + start_anchor, 1)
           text = text.replace(
               setup_anchor,
               setup_anchor + '\n  if [ -n "$DRAFT_VOCAB" ]; then set -- "$@" --draft-vocab "$DRAFT_VOCAB"; fi',
@@ -227,7 +242,7 @@ jobs:
           )
           path.write_text(text)
           PY
-          grep -n 'DRAFT_VOCAB' src/docker-entrypoint.sh
+          grep -n 'DRAFT_VOCAB\|strata-env-config' src/docker-entrypoint.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -339,6 +354,10 @@ jobs:
           path: src
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Add the wrapper config helper
+        if: steps.check.outputs.exists != 'true'
+        run: cp docker/strata-env-config.py src/
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.exists != 'true'
@@ -456,6 +475,10 @@ jobs:
           path: src
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Add the wrapper config helper
+        if: steps.check.outputs.exists != 'true'
+        run: cp docker/strata-env-config.py src/
 
       - name: Set up Docker Buildx
         if: steps.check.outputs.exists != 'true'
