@@ -219,137 +219,6 @@ jobs:
             echo "Digest: \`${{ steps.build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  build-cuda-arm64:
-    name: Build and push ${{ needs.resolve.outputs.tag }} (CUDA arm64)
-    needs: resolve
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 350
-    steps:
-      - name: Check whether this variant is already published
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-          FORCE: ${{ inputs.force }}
-        run: |
-          set -euo pipefail
-          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          if [ "$FORCE" != "true" ] && docker manifest inspect "$IMAGE:$VERSION-arm64" >/dev/null 2>&1; then
-            echo "$IMAGE:$VERSION-arm64 already exists; skipping."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Free disk space
-        if: steps.check.outputs.exists != 'true'
-        run: |
-          set -euo pipefail
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost \
-            /usr/local/share/powershell \
-            /usr/share/swift \
-            /usr/local/.ghcup \
-            /opt/az \
-            /usr/lib/jvm
-          sudo apt-get clean
-          sudo docker image prune -af
-          df -h /
-
-      - name: Check out this repository
-        if: steps.check.outputs.exists != 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Check out upstream at the release tag
-        if: steps.check.outputs.exists != 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: Niko1221/Strata
-          ref: ${{ needs.resolve.outputs.tag }}
-          path: src
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Add the wrapper config helper
-        if: steps.check.outputs.exists != 'true'
-        run: cp docker/strata-env-config.py src/
-
-      # No --portable here: the AVX2 baseline is an x86_64 setting. The entry
-      # point patch (DRAFT_VOCAB, config overrides, x86-only warning) still
-      # applies.
-      - name: Patch upstream for the wrapper
-        if: steps.check.outputs.exists != 'true'
-        run: python3 docker/patch-upstream.py src
-
-      - name: Set up Docker Buildx
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GHCR
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image metadata
-        id: meta
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ needs.resolve.outputs.version }}-arm64
-            type=raw,value=${{ needs.resolve.outputs.tag }}-arm64
-            type=raw,value=latest-arm64,enable=${{ needs.resolve.outputs.is_latest }}
-          labels: |
-            org.opencontainers.image.title=Strata (CUDA arm64)
-            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for NVIDIA GB10 / DGX Spark (sm_121)
-            org.opencontainers.image.url=https://github.com/Niko1221/Strata
-            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata#readme
-            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
-            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
-            org.opencontainers.image.licenses=MIT
-            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
-            com.github.strata.backend=cuda
-            com.github.strata.cuda-architectures=121
-
-      - name: Build and push
-        id: build
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: src
-          file: src/Dockerfile
-          platforms: linux/arm64
-          push: true
-          build-args: |
-            CUDA_ARCHITECTURES=121
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-
-      - name: Summary
-        if: steps.check.outputs.exists != 'true'
-        run: |
-          {
-            echo
-            echo "### Published (CUDA arm64)"
-            echo
-            echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo '```'
-            echo
-            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   build-rocm:
     name: Build and push ${{ needs.resolve.outputs.tag }} (ROCm)
     needs: resolve
@@ -592,48 +461,9 @@ jobs:
             echo "Digest: \`${{ steps.build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  combine-cuda:
-    name: Combine CUDA multi-arch tags
-    needs: [resolve, build, build-cuda-arm64]
-    if: always() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && (needs.build-cuda-arm64.result == 'success' || needs.build-cuda-arm64.result == 'skipped')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # The variant tags keep their provenance attestations; the canonical
-      # tags point at the two platform manifests so `docker pull` picks the
-      # host architecture.
-      - name: Create multi-arch manifests
-        env:
-          VERSION: ${{ needs.resolve.outputs.version }}
-          TAG: ${{ needs.resolve.outputs.tag }}
-          IS_LATEST: ${{ needs.resolve.outputs.is_latest }}
-        run: |
-          set -euo pipefail
-          amd="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --raw | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' | head -1)"
-          arm="$(docker buildx imagetools inspect "$IMAGE:$VERSION-arm64" --raw | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' | head -1)"
-          if [ -z "$amd" ] || [ -z "$arm" ]; then
-            echo "::error::missing platform manifest (amd64=${amd:-none}, arm64=${arm:-none})"
-            exit 1
-          fi
-
-          refs=("$IMAGE:$VERSION" "$IMAGE:$TAG")
-          [ "$IS_LATEST" = "true" ] && refs+=("$IMAGE:latest")
-          for ref in "${refs[@]}"; do
-            echo "== $ref"
-            docker buildx imagetools create -t "$ref" "$IMAGE@$amd" "$IMAGE@$arm"
-          done
-          docker buildx imagetools inspect "$IMAGE:$VERSION" | sed -n '1,25p'
-
   verify:
     name: Verify published images
-    needs: [resolve, build, build-rocm, build-sycl, build-cuda-arm64, combine-cuda]
+    needs: [resolve, build, build-rocm, build-sycl]
     # Runs after the builds, and on its own when every variant was already
     # published — dispatch the workflow with the current tag to re-check cheaply.
     if: always() && needs.resolve.result == 'success'
@@ -655,7 +485,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for suffix in "" "-rocm" "-sycl" "-arm64"; do
+          for suffix in "" "-rocm" "-sycl"; do
             case "$suffix" in
               "") latest_ref="$IMAGE:latest" ;;
               *) latest_ref="$IMAGE:latest$suffix" ;;
@@ -684,7 +514,7 @@ jobs:
           set -euo pipefail
           cfg="$(mktemp -d)"
           public=1
-          for suffix in "" "-rocm" "-sycl" "-arm64"; do
+          for suffix in "" "-rocm" "-sycl"; do
             if DOCKER_CONFIG="$cfg" docker buildx imagetools inspect "$IMAGE:$VERSION$suffix" >/dev/null 2>&1; then
               echo "$IMAGE:$VERSION$suffix: anonymous pull works"
             else

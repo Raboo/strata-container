@@ -14,13 +14,13 @@ Current image: `ghcr.io/raboo/strata:0.1.45` (upstream release `v0.1.45`)
 
 ## Images
 
-| Backend | Tags | Platforms | Hardware | Status |
-| --- | --- | --- | --- | --- |
-| CUDA | `latest`, `0.1.45`, `v0.1.45`; arm64: `latest-arm64`, `0.1.45-arm64`, `v0.1.45-arm64` | `linux/amd64`, `linux/arm64` | NVIDIA RTX 20/30/40/50, A-series; DGX Spark (GB10, sm_121) | upstream-supported |
-| ROCm | `latest-rocm`, `0.1.45-rocm`, `v0.1.45-rocm` | `linux/amd64` | AMD RX 7900/7800/7700/7600/9070/9060/6800/6900; Strix Halo (gfx1151) | upstream HIP backend |
-| SYCL | `latest-sycl`, `0.1.45-sycl`, `v0.1.45-sycl` | `linux/amd64` | Intel Arc A/B-series | experimental upstream port |
+| Backend | Tags | Hardware | Status |
+| --- | --- | --- | --- |
+| CUDA | `latest`, `0.1.45`, `v0.1.45` | NVIDIA RTX 20/30/40/50, A-series | upstream-supported |
+| ROCm | `latest-rocm`, `0.1.45-rocm`, `v0.1.45-rocm` | AMD RX 7900/7800/7700/7600/9070/9060/6800/6900; Strix Halo (gfx1151) | upstream HIP backend |
+| SYCL | `latest-sycl`, `0.1.45-sycl`, `v0.1.45-sycl` | Intel Arc A/B-series | experimental upstream port |
 
-Canonical CUDA tags are multi-arch manifests (amd64 + arm64); the `-arm64` tags are the explicit arm64 builds. Each backend tag is independent: a missing or failed variant does not block the others.
+All images are `linux/amd64` (see [Platform coverage](#platform-coverage) for why arm64 is not available). Each backend tag is independent: a missing or failed variant does not block the others.
 
 ## Run
 
@@ -36,21 +36,6 @@ docker run --rm --gpus all \
 ```
 
 Host requirements: NVIDIA driver **>= 580** and `nvidia-container-toolkit`.
-
-### NVIDIA DGX Spark (arm64)
-
-The canonical CUDA tags are multi-arch; on a DGX Spark they resolve to the arm64 image built for GB10 (`sm_121`). The explicit tag is `latest-arm64`.
-
-```sh
-docker run --rm --gpus all \
-  -p 8080:8080 \
-  --ulimit memlock=-1 \
-  -v strata-data:/data \
-  -e MODEL=IQ2_XS \
-  ghcr.io/raboo/strata:latest
-```
-
-Host requirements: DGX OS (arm64), NVIDIA driver and `nvidia-container-toolkit`. The arm64 image carries CUDA code for `sm_121` only; it is not a general-purpose arm64 GPU image.
 
 ### AMD (ROCm)
 
@@ -130,7 +115,7 @@ Sampling values are defaults for requests that leave the field out; a request's 
 | Target | Available? |
 | --- | --- |
 | NVIDIA RTX 20–50 / A-series, amd64 | yes |
-| NVIDIA DGX Spark GB10, arm64 (`sm_121`) | yes |
+| NVIDIA DGX Spark GB10, arm64 | no — upstream's CUDA engine is x86_64-only (`immintrin.h`, AVX CPU kernels) |
 | AMD Radeon RX 6000/7000/9000, amd64 | yes |
 | AMD Strix Halo (`gfx1151`), amd64 | yes (experimental upstream) |
 | Intel Arc A/B-series, amd64 | yes (experimental upstream) |
@@ -139,7 +124,7 @@ Sampling values are defaults for requests that leave the field out; a request's 
 | NVIDIA Jetson (Orin/Thor) | no — L4T/JetPack's CUDA stack differs; upstream has no port |
 | Apple Silicon / macOS | no — Linux containers cannot use Metal |
 
-macOS cannot be a container target: Docker runs Linux containers in a VM without Metal GPU passthrough, and upstream's Apple Silicon support is a native build (`metal/setup_mac.py`). The arm64 CUDA image exists for DGX Spark, not for Macs.
+macOS cannot be a container target: Docker runs Linux containers in a VM without Metal GPU passthrough, and upstream's Apple Silicon support is a native build (`metal/setup_mac.py`). Upstream does have arm64 host code for the Metal backend, but it does not make the CUDA/HIP engines build on arm64: those include x86 intrinsics (`src/core/graph.cpp`, `src/kernels/cpu/*`) and only the Metal build has the compatibility layer and a portable kernel path.
 
 ## How builds work
 
@@ -147,17 +132,16 @@ macOS cannot be a container target: Docker runs Linux containers in a VM without
 
 1. Every 6 hours (and on manual dispatch) resolves the latest upstream release; a dispatch can name any tag and force a rebuild.
 2. Builds each variant whose `ghcr.io/raboo/strata:<version><suffix>` tag does not exist yet, so the schedule is idempotent.
-3. CUDA builds upstream's `Dockerfile` on amd64 (`--portable`) and on arm64 for DGX Spark (`sm_121`). ROCm and SYCL use `docker/Dockerfile.rocm` and `docker/Dockerfile.sycl` (upstream has no Dockerfile for either).
-4. Combines the amd64 and arm64 CUDA manifests under the canonical tags (`0.1.45`, `v0.1.45`, `latest`).
-5. Verifies every expected tag is readable in the registry, and whether anonymous pulls work (i.e. whether the package is public).
-6. For the latest release, updates the version marker at the top of this README and commits it.
+3. CUDA builds upstream's `Dockerfile` (amd64, with `--portable`). ROCm and SYCL use `docker/Dockerfile.rocm` and `docker/Dockerfile.sycl` (upstream has no Dockerfile for either).
+4. Verifies every expected tag is readable in the registry, and whether anonymous pulls work (i.e. whether the package is public).
+5. For the latest release, updates the version marker at the top of this README and commits it.
 
 Scheduled workflows in public repositories are disabled after 60 days without a commit (the scheduled run itself does not count). `.github/workflows/keepalive.yml` runs weekly and commits a marker when the last commit is older than 50 days, so the release poll stays enabled even if upstream goes quiet. Re-enable a disabled workflow from the Actions tab if it was off for longer than that.
 
 ### Backend recipes and deviations
 
-- **CUDA / AVX2 CPU baseline (amd64 only).** Upstream's Dockerfile compiles native code for the build machine. A GitHub runner may have AVX-512, which would make the published image crash with `SIGILL` on AVX2-only CPUs — even though the entry point advertises AVX2 as the floor. The amd64 build injects `-DSTRATA_PORTABLE=ON` into both the engine and vision builds; the arm64 build stays native. `docker/patch-upstream.py` also exposes `DRAFT_VOCAB` and the config overrides, and limits the AVX2 warning to `x86_64`. Every upstream anchor is asserted, so an upstream change fails the build loudly.
-- **CUDA architectures.** amd64 stays at upstream's default `75;80;86;89;120` (RTX 20/30/40/50 and A-series). arm64 is built with `CUDA_ARCHITECTURES=121` for DGX Spark (GB10). Both are fat binaries/cubins; a card outside the set needs a local build with `--build-arg CUDA_ARCHITECTURES=<arch>`.
+- **CUDA / AVX2 CPU baseline.** Upstream's Dockerfile compiles native code for the build machine. A GitHub runner may have AVX-512, which would make the published image crash with `SIGILL` on AVX2-only CPUs — even though the entry point advertises AVX2 as the floor. The build injects `-DSTRATA_PORTABLE=ON` into both the engine and vision builds. `docker/patch-upstream.py` also exposes `DRAFT_VOCAB` and the config overrides, and limits the AVX2 warning to `x86_64`. Every upstream anchor is asserted, so an upstream change fails the build loudly.
+- **CUDA architectures** stay at upstream's default `75;80;86;89;120` (RTX 20/30/40/50 and A-series). The engine is a fat binary and picks the matching cubin at runtime. For a card outside that set, build locally with `--build-arg CUDA_ARCHITECTURES=<arch>`.
 - **ROCm** uses upstream's HIP build flags from `setup.py:build_engine_hip`, `rocm/dev-ubuntu-24.04:7.2.4`, and a fat binary for `gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx1151` (`--build-arg HIP_ARCHITECTURES=...` to narrow). `engine/BUILD.json` is written the way `setup.py` expects, so the first start reuses the engine instead of compiling. The CUDA entry point is reused unchanged.
 - **SYCL** builds upstream's `sycl/` project on its documented oneAPI/Level Zero base with JIT (`--build-arg SYCL_AOT=bmg-g31` for AOT). The port's `sycl/serve/strata-sycl.sh` normally starts a nested `strata-sycl-dev` container; the image replaces it with a direct exec and keeps data under `/work`, which is the path its setup writes into configs.
 - **Package visibility.** GHCR packages are private by default and GitHub's REST API cannot change visibility. If an anonymous pull fails, set the package to public in its [package settings](https://github.com/users/Raboo/packages/container/strata/settings) (Danger Zone → Change visibility). The `verify` job reports whether anonymous pulls work.
@@ -168,25 +152,16 @@ Scheduled workflows in public repositories are disabled after 60 days without a 
 gh workflow run publish.yml --repo raboo/strata-container -f tag=v0.1.45 -f force=true
 ```
 
-`force` rebuilds all variants (amd64 CUDA, arm64 CUDA, ROCm, SYCL). To build locally, use an upstream checkout as the build context and run the same patch helper:
+`force` rebuilds all variants (CUDA, ROCm, SYCL). To build locally, use an upstream checkout as the build context and run the same patch helper:
 
 ```sh
-git clone --depth 1 --branch v0.1.45 https://github.com/Niko1221/Strata.git /tmp/strata-amd64
-git clone --depth 1 --branch v0.1.45 https://github.com/Niko1221/Strata.git /tmp/strata-arm64
-cp docker/strata-env-config.py /tmp/strata-amd64/ /tmp/strata-arm64/
+git clone --depth 1 --branch v0.1.45 https://github.com/Niko1221/Strata.git /tmp/strata
+cp docker/strata-env-config.py /tmp/strata/
+python3 docker/patch-upstream.py /tmp/strata --portable
 
-# CUDA amd64 (AVX2 baseline)
-python3 docker/patch-upstream.py /tmp/strata-amd64 --portable
-docker build -f /tmp/strata-amd64/Dockerfile -t strata /tmp/strata-amd64
-
-# CUDA arm64 (DGX Spark, sm_121; needs an arm64 host)
-python3 docker/patch-upstream.py /tmp/strata-arm64
-docker build -f /tmp/strata-arm64/Dockerfile --build-arg CUDA_ARCHITECTURES=121 -t strata-arm64 /tmp/strata-arm64
-
-# ROCm and SYCL (their Dockerfiles carry the entry point patch)
-cp docker/strata-env-config.py /tmp/strata-amd64/
-docker build -f docker/Dockerfile.rocm -t strata-rocm /tmp/strata-amd64
-docker build -f docker/Dockerfile.sycl -t strata-sycl /tmp/strata-amd64
+docker build -f /tmp/strata/Dockerfile -t strata /tmp/strata
+docker build -f docker/Dockerfile.rocm -t strata-rocm /tmp/strata
+docker build -f docker/Dockerfile.sycl -t strata-sycl /tmp/strata
 ```
 
 ## License
