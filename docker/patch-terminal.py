@@ -18,6 +18,19 @@ CALL = (
 )
 
 
+def patch_dockerfile(root: Path) -> None:
+    """The Terminal stage runs `git rev-parse` (package_terminal.py writes COMMIT); the base lacks git."""
+    path = root / "docker" / "Dockerfile"
+    text = path.read_text(encoding="utf-8")
+    old = "apt-get install -y --no-install-recommends python3 ca-certificates"
+    if "python3 ca-certificates git" in text:
+        return
+    if old not in text:
+        raise SystemExit(f"{path}: the Terminal stage's apt line changed; update docker/patch-terminal.py")
+    path.write_text(text.replace(old, old + " git", 1), encoding="utf-8")
+    print(f"{path}: added git to the Terminal build stage")
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
@@ -27,12 +40,14 @@ def main() -> int:
     text = path.read_text(encoding="utf-8")
     if "wrapper_env.apply(base, path=base_path)" in text:
         print(f"{path}: already patched")
+        patch_dockerfile(root)
         return 0
     if text.count(ANCHOR) != 1:
         raise SystemExit(f"{path}: expected one 'base = read_config(base_path)' line; update docker/patch-terminal.py")
     text = text.replace(ANCHOR, ANCHOR + CALL, 1)
     path.write_text(text, encoding="utf-8")
     print(f"{path}: patched build_config")
+    patch_dockerfile(root)
     return 0
 
 
