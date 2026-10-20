@@ -270,7 +270,38 @@ jobs:
           fi
           bash src/docker/build.sh --flavor "$BUILD_FLAVOR" "${args[@]}" \
             --tag "$IMAGE:$VERSION$SUFFIX" --version "$VERSION"
-          docker run --rm "$IMAGE:$VERSION$SUFFIX" strata --version
+
+      - name: Smoke-test the image
+        if: steps.check.outputs.exists != 'true'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+          img="$IMAGE:$VERSION$SUFFIX"
+          docker run --rm "$img" strata --version
+          docker run --rm "$img" sh -c \
+            'test -f /opt/strata/terminal/strata_cli/launch/wrapper_env.py &&
+             grep -q "wrapper_env.apply(base" /opt/strata/terminal/strata_cli/launch/runner.py &&
+             test -f /opt/strata/terminal/data/draft_vocab_en.bin'
+          docker run --rm -i \
+            -e PREFILL=auto:32768 -e CONVERSATION_CACHE_MIB=8192 \
+            -e SAMPLING_TEMPERATURE=1.0 -e SAMPLING_TOP_K=20 -e DRAFT_VOCAB=en \
+            "$img" /opt/strata/terminal/python/bin/python3 - <<'PY'
+          import json, pathlib, sys, tempfile
+          sys.path.insert(0, "/opt/strata/terminal")
+          from strata_cli.launch import wrapper_env
+          tmp = pathlib.Path(tempfile.mkdtemp())
+          mtp = tmp / "mtp"
+          mtp.mkdir()
+          p = tmp / "cfg.json"
+          p.write_text(json.dumps({"args": ["--mtp", str(mtp)]}))
+          cfg = wrapper_env.apply(json.loads(p.read_text()), path=p)
+          assert cfg["user_args"] == ["--prefill", "auto:32768", "--conversation-cache-mib", "8192"], cfg["user_args"]
+          assert cfg["sampling"]["top_k"] == 20 and cfg["sampling"]["temperature"] == 1.0
+          assert cfg["draft_vocab"] == "en" and (mtp / "draft_vocab.bin").stat().st_size > 0
+          print("wrapper overrides OK in the image")
+          PY
 
       - name: Push the tags
         if: steps.check.outputs.exists != 'true'
