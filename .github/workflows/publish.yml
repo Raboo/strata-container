@@ -1,9 +1,17 @@
 name: Publish container image
 
 # Upstream has no release webhook we can subscribe to, so poll. Every run is a
-# no-op unless a release newer than the published images exists, or a manual
+# no-op unless the images for the newest release do not exist yet, or a manual
 # dispatch asks for a specific tag. GitHub disables schedules after 60 days of
-# repository inactivity; push a commit (or run manually) to re-enable.
+# repository inactivity; the keepalive workflow lands a commit before that.
+#
+# From 0.2.1 on, upstream builds its images from signed engine component
+# packages (docker/fetch-engines.py) plus the Terminal sources, and publishes
+# the result with docker/build.sh. This workflow does the same, with one image
+# per backend family:
+#   ghcr.io/raboo/strata:<version>        CUDA 13 + CUDA 12 engines
+#   ghcr.io/raboo/strata:<version>-rocm   HIP gfx120x + gfx110x + gfx1151
+# The Terminal picks the engine that fits the card/driver at start.
 
 on:
   schedule:
@@ -11,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Upstream tag to build (e.g. v0.1.45). Default: latest release."
+        description: "Upstream tag to build (e.g. v0.2.1). Default: latest release."
         required: false
         type: string
       force:
@@ -88,7 +96,7 @@ jobs:
             echo "- latest release: \`$latest\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Check whether the image is already published
+      - name: Check whether the CUDA image is already published
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,138 +112,44 @@ jobs:
             echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
             if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
               skip=true
-              echo "$IMAGE:$VERSION already exists; nothing to do."
+              echo "$IMAGE:$VERSION already exists; the CUDA build will be skipped."
             else
               echo "$IMAGE:$VERSION does not exist yet; it will be built."
             fi
           fi
 
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
-          echo "- publish: \`$([ "$skip" = true ] && echo no || echo yes)\`" >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: Build and push ${{ needs.resolve.outputs.tag }} (CUDA)
-    needs: resolve
-    if: needs.resolve.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    steps:
-      # The CUDA devel base alone is ~10 GB unpacked and the engine build needs
-      # several more; a stock runner does not have enough free space.
-      - name: Free disk space
-        run: |
-          set -euo pipefail
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost \
-            /usr/local/share/powershell \
-            /usr/share/swift \
-            /usr/local/.ghcup \
-            /opt/az \
-            /usr/lib/jvm
-          sudo apt-get clean
-          sudo docker image prune -af
-          df -h /
-
-      - name: Check out this repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Check out upstream at the release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: Niko1221/Strata
-          ref: ${{ needs.resolve.outputs.tag }}
-          path: src
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Add the wrapper config helper
-        run: cp docker/strata-env-config.py src/
-
-      # Upstream builds native code for the build machine. On x86_64 a GitHub
-      # runner may have AVX-512, which would make the image die with SIGILL on
-      # AVX2-only CPUs, so --portable pins ggml to an AVX2 baseline. The same
-      # script patches the entry point (DRAFT_VOCAB, config overrides) and the
-      # x86-only AVX2 warning. Every upstream anchor is asserted.
-      - name: Patch upstream for the wrapper
-        run: python3 docker/patch-upstream.py src --portable
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ needs.resolve.outputs.version }}
-            type=raw,value=${{ needs.resolve.outputs.tag }}
-            type=raw,value=latest,enable=${{ needs.resolve.outputs.is_latest }}
-          labels: |
-            org.opencontainers.image.title=Strata
-            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for NVIDIA GPUs, built from upstream source
-            org.opencontainers.image.url=https://github.com/Niko1221/Strata
-            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata#readme
-            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
-            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
-            org.opencontainers.image.licenses=MIT
-            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: src
-          file: src/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-
-      - name: Summary
-        run: |
-          {
-            echo
-            echo "### Published"
-            echo
-            echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo '```'
-            echo
-            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  build-rocm:
-    name: Build and push ${{ needs.resolve.outputs.tag }} (ROCm)
+    name: Build and push ${{ matrix.label }} ${{ needs.resolve.outputs.tag }}
     needs: resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: CUDA
+            flavors: cuda13,cuda12
+            build_flavor: cuda
+            suffix: ""
+          - label: ROCm
+            flavors: rocm-gfx120x,rocm-gfx110x,rocm-gfx1151
+            build_flavor: hip
+            suffix: "-rocm"
     steps:
       - name: Check whether this variant is already published
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.resolve.outputs.version }}
+          SUFFIX: ${{ matrix.suffix }}
           FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          if [ "$FORCE" != "true" ] && docker manifest inspect "$IMAGE:$VERSION-rocm" >/dev/null 2>&1; then
-            echo "$IMAGE:$VERSION-rocm already exists; skipping."
+          if [ "$FORCE" != "true" ] && docker manifest inspect "$IMAGE:$VERSION$SUFFIX" >/dev/null 2>&1; then
+            echo "$IMAGE:$VERSION$SUFFIX already exists; skipping."
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -276,13 +190,48 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Add the wrapper config helper
+      # The wrapper overrides are applied from the Terminal's build_config, on
+      # the installed run config (so they persist in /data/install). build.sh
+      # assembles terminal-src from `git ls-files`, hence the `git add`.
+      - name: Patch the Terminal for the wrapper overrides
         if: steps.check.outputs.exists != 'true'
-        run: cp docker/strata-env-config.py src/
+        run: |
+          set -euo pipefail
+          cp docker/wrapper_env.py src/strata_cli/launch/
+          python3 docker/patch-terminal.py src
+          git -C src add strata_cli/launch/wrapper_env.py
+          python3 -m py_compile src/strata_cli/launch/runner.py src/strata_cli/launch/wrapper_env.py
 
-      - name: Set up Docker Buildx
+      - name: Test the wrapper overrides
         if: steps.check.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python3 - <<'PY'
+          import importlib.util, json, os, pathlib, tempfile
+          src = pathlib.Path("src")
+          spec = importlib.util.spec_from_file_location("wrapper_env", src / "strata_cli/launch/wrapper_env.py")
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          tmp = pathlib.Path(tempfile.mkdtemp())
+          mtp = tmp / "mtp"
+          mtp.mkdir()
+          cfg_path = tmp / "strata-test.json"
+          cfg_path.write_text(json.dumps({"args": ["--native", "m.gguf", "--mtp", str(mtp)]}))
+          os.environ.update(
+              PREFILL="auto:32768", CONVERSATION_CACHE_MIB="8192", FIT_MAX_TOKENS="true",
+              SAMPLING_TEMPERATURE="1.0", SAMPLING_TOP_P="0.95", SAMPLING_TOP_K="20",
+              SAMPLING_MIN_P="0.0", SAMPLING_PRESENCE_PENALTY="0.0", SAMPLING_REPETITION_PENALTY="1.0",
+              DRAFT_VOCAB="en")
+          cfg = mod.apply(json.loads(cfg_path.read_text()), path=cfg_path)
+          assert cfg["user_args"] == ["--prefill", "auto:32768", "--conversation-cache-mib", "8192"], cfg["user_args"]
+          assert cfg["fit_max_tokens"] is True
+          assert cfg["sampling"]["top_k"] == 20 and cfg["sampling"]["top_p"] == 0.95
+          assert cfg["draft_vocab"] == "en"
+          assert (mtp / "draft_vocab.bin").stat().st_size > 0
+          saved = json.loads(cfg_path.read_text())
+          assert saved["draft_vocab"] == "en" and saved["user_args"] == cfg["user_args"]
+          print("wrapper overrides OK")
+          PY
 
       - name: Log in to GHCR
         if: steps.check.outputs.exists != 'true'
@@ -292,180 +241,68 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image metadata
-        id: meta
+      - name: Fetch the signed engine packages
         if: steps.check.outputs.exists != 'true'
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ needs.resolve.outputs.version }}-rocm
-            type=raw,value=${{ needs.resolve.outputs.tag }}-rocm
-            type=raw,value=latest-rocm,enable=${{ needs.resolve.outputs.is_latest }}
-          labels: |
-            org.opencontainers.image.title=Strata (ROCm)
-            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for AMD Radeon through HIP
-            org.opencontainers.image.url=https://github.com/Niko1221/Strata
-            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata/blob/main/docs/AMD_HIP.md
-            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
-            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
-            org.opencontainers.image.licenses=MIT
-            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
-            com.github.strata.backend=hip
-
-      - name: Build and push
-        id: build
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: src
-          file: ${{ github.workspace }}/docker/Dockerfile.rocm
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-
-      - name: Summary
-        if: steps.check.outputs.exists != 'true'
-        run: |
-          {
-            echo
-            echo "### Published (ROCm)"
-            echo
-            echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
-            echo '```'
-            echo
-            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  build-sycl:
-    name: Build and push ${{ needs.resolve.outputs.tag }} (SYCL)
-    needs: resolve
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    steps:
-      - name: Check whether this variant is already published
-        id: check
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          FLAVORS: ${{ matrix.flavors }}
+        run: |
+          set -euo pipefail
+          cd src
+          python3 docker/fetch-engines.py --release-tag "$TAG" --flavors "$FLAVORS" \
+            --out "$RUNNER_TEMP/pkgs" > "$RUNNER_TEMP/engines.tsv"
+          cat "$RUNNER_TEMP/engines.tsv"
+
+      - name: Build the image
+        if: steps.check.outputs.exists != 'true'
+        env:
           VERSION: ${{ needs.resolve.outputs.version }}
-          FORCE: ${{ inputs.force }}
+          SUFFIX: ${{ matrix.suffix }}
+          BUILD_FLAVOR: ${{ matrix.build_flavor }}
         run: |
           set -euo pipefail
-          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
-          if [ "$FORCE" != "true" ] && docker manifest inspect "$IMAGE:$VERSION-sycl" >/dev/null 2>&1; then
-            echo "$IMAGE:$VERSION-sycl already exists; skipping."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          args=()
+          while IFS=$'\t' read -r _flavor _build_flavor folder; do
+            [ -n "${folder:-}" ] && args+=(--engine "$folder")
+          done < "$RUNNER_TEMP/engines.tsv"
+          if [ "${#args[@]}" -eq 0 ]; then
+            echo "::error::no engine packages were fetched"
+            exit 1
           fi
+          bash src/docker/build.sh --flavor "$BUILD_FLAVOR" "${args[@]}" \
+            --tag "$IMAGE:$VERSION$SUFFIX" --version "$VERSION"
+          docker run --rm "$IMAGE:$VERSION$SUFFIX" strata --version
 
-      - name: Free disk space
+      - name: Push the tags
         if: steps.check.outputs.exists != 'true'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SUFFIX: ${{ matrix.suffix }}
+          IS_LATEST: ${{ needs.resolve.outputs.is_latest }}
         run: |
           set -euo pipefail
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost \
-            /usr/local/share/powershell \
-            /usr/share/swift \
-            /usr/local/.ghcup \
-            /opt/az \
-            /usr/lib/jvm
-          sudo apt-get clean
-          sudo docker image prune -af
-          df -h /
-
-      - name: Check out this repository
-        if: steps.check.outputs.exists != 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Check out upstream at the release tag
-        if: steps.check.outputs.exists != 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: Niko1221/Strata
-          ref: ${{ needs.resolve.outputs.tag }}
-          path: src
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Add the wrapper config helper
-        if: steps.check.outputs.exists != 'true'
-        run: cp docker/strata-env-config.py src/
-
-      - name: Set up Docker Buildx
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GHCR
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image metadata
-        id: meta
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ needs.resolve.outputs.version }}-sycl
-            type=raw,value=${{ needs.resolve.outputs.tag }}-sycl
-            type=raw,value=latest-sycl,enable=${{ needs.resolve.outputs.is_latest }}
-          labels: |
-            org.opencontainers.image.title=Strata (SYCL)
-            org.opencontainers.image.description=Strata inference engine (Niko1221/Strata) for Intel Arc through the experimental SYCL port
-            org.opencontainers.image.url=https://github.com/Niko1221/Strata
-            org.opencontainers.image.documentation=https://github.com/Niko1221/Strata/blob/main/docs/INTEL_ARC.md
-            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
-            org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
-            org.opencontainers.image.licenses=MIT
-            com.github.strata.upstream-tag=${{ needs.resolve.outputs.tag }}
-            com.github.strata.backend=sycl
-
-      - name: Build and push
-        id: build
-        if: steps.check.outputs.exists != 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: src
-          file: ${{ github.workspace }}/docker/Dockerfile.sycl
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-
-      - name: Summary
-        if: steps.check.outputs.exists != 'true'
-        run: |
+          local_tag="$IMAGE:$VERSION$SUFFIX"
+          tags=("$local_tag" "$IMAGE:$TAG$SUFFIX")
+          [ "$IS_LATEST" = "true" ] && tags+=("$IMAGE:latest$SUFFIX")
+          for tag in "${tags[@]}"; do
+            docker tag "$local_tag" "$tag"
+            docker push "$tag"
+          done
           {
             echo
-            echo "### Published (SYCL)"
+            echo "### Published (${{ matrix.label }})"
             echo
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
+            printf '%s\n' "${tags[@]}"
             echo '```'
-            echo
-            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   verify:
     name: Verify published images
-    needs: [resolve, build, build-rocm, build-sycl]
-    # Runs after the builds, and on its own when every variant was already
-    # published — dispatch the workflow with the current tag to re-check cheaply.
+    needs: [resolve, build]
+    # Runs after the builds, and on its own when both variants already exist —
+    # dispatch the workflow with the current tag to re-check cheaply.
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -485,7 +322,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for suffix in "" "-rocm" "-sycl"; do
+          for suffix in "" "-rocm"; do
             case "$suffix" in
               "") latest_ref="$IMAGE:latest" ;;
               *) latest_ref="$IMAGE:latest$suffix" ;;
@@ -514,7 +351,7 @@ jobs:
           set -euo pipefail
           cfg="$(mktemp -d)"
           public=1
-          for suffix in "" "-rocm" "-sycl"; do
+          for suffix in "" "-rocm"; do
             if DOCKER_CONFIG="$cfg" docker buildx imagetools inspect "$IMAGE:$VERSION$suffix" >/dev/null 2>&1; then
               echo "$IMAGE:$VERSION$suffix: anonymous pull works"
             else
@@ -588,4 +425,3 @@ jobs:
 
           echo "::error::could not update README.md"
           exit 1
-

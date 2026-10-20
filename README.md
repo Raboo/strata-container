@@ -1,8 +1,6 @@
 # Strata container images
 
-Prebuilt container images of [Niko1221/Strata](https://github.com/Niko1221/Strata), published to the GitHub Container Registry: NVIDIA CUDA, AMD Radeon (HIP), and Intel Arc (SYCL, experimental).
-
-Upstream ships a [`Dockerfile`](https://github.com/Niko1221/Strata/blob/main/Dockerfile) but no images. This repository builds images at every upstream tagged release and publishes them as a package:
+Prebuilt container images of [Niko1221/Strata](https://github.com/Niko1221/Strata), published to the GitHub Container Registry, built from upstream's signed engine component packages and Terminal sources at each tagged release.
 
 ```
 ghcr.io/raboo/strata
@@ -14,75 +12,50 @@ Current image: `ghcr.io/raboo/strata:0.1.45` (upstream release `v0.1.45`)
 
 ## Images
 
-| Backend | Tags | Hardware | Status |
+| Backend | Tags | Engines inside | Hardware |
 | --- | --- | --- | --- |
-| CUDA | `latest`, `0.1.45`, `v0.1.45` | NVIDIA RTX 20/30/40/50, A-series | upstream-supported |
-| ROCm | `latest-rocm`, `0.1.45-rocm`, `v0.1.45-rocm` | AMD RX 7900/7800/7700/7600/9070/9060/6800/6900; Strix Halo (gfx1151) | upstream HIP backend |
-| SYCL | `latest-sycl`, `0.1.45-sycl`, `v0.1.45-sycl` | Intel Arc A/B-series | experimental upstream port |
+| CUDA | `latest`, `0.2.1`, `v0.2.1` | CUDA 13 + CUDA 12 | RTX 20/30/40/50, A-series; GTX 10 / P100 / V100 through CUDA 12 |
+| ROCm | `latest-rocm`, `0.2.1-rocm`, `v0.2.1-rocm` | `gfx120x` + `gfx110x` + `gfx1151` | RX 9000 / R9700, RX 7000 (and RX 7600), Ryzen AI Max (Strix Halo) |
 
-All images are `linux/amd64` (see [Platform coverage](#platform-coverage) for why arm64 is not available). Each backend tag is independent: a missing or failed variant does not block the others.
+All images are `linux/amd64`. One image per backend family contains every engine package; the Terminal picks the one that fits the card and driver at start. This is a deliberate difference from upstream's per-flavor tags (`0.2.1-cuda13`, `0.2.1-rocm-gfx120x`, ...).
+
+Not covered by 0.2.1: AMD RX 6000 (`gfx1030`) has no package in the new release — keep using `0.1.45-rocm` for those cards. There is no Intel SYCL engine package in 0.2.1, so the newest Intel image remains `0.1.45-sycl`. Old tags are never deleted.
 
 ## Run
 
-### NVIDIA (CUDA)
+NVIDIA:
 
 ```sh
-docker run --rm --gpus all \
-  -p 8080:8080 \
-  --ulimit memlock=-1 \
-  -v strata-data:/data \
-  -e MODEL=IQ2_XS \
+docker run -d --name strata --gpus all -p 127.0.0.1:8080:8080 \
+  --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
+  -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
   ghcr.io/raboo/strata:latest
 ```
 
-Host requirements: NVIDIA driver **>= 580** and `nvidia-container-toolkit`.
-
-### AMD (ROCm)
+AMD:
 
 ```sh
-docker run --rm \
-  --device /dev/kfd --device /dev/dri \
-  --group-add video --group-add render \
-  -p 8080:8080 --ulimit memlock=-1 \
-  -v strata-data:/data \
-  -e MODEL=IQ2_XS \
+docker run -d --name strata --device /dev/kfd --device /dev/dri \
+  --group-add video --group-add $(getent group render | cut -d: -f3) \
+  -p 127.0.0.1:8080:8080 --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
+  -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
   ghcr.io/raboo/strata:latest-rocm
 ```
 
-Host requirements: the kernel's `amdgpu` driver; **no ROCm install is needed** (the image carries ROCm 7.2.4). Supported architectures: `gfx1100` (RX 7900), `gfx1101` (RX 7800/7700), `gfx1102` (RX 7600), `gfx1200` (RX 9060), `gfx1201` (RX 9070 / R9700), `gfx1030` (RX 6800/6900), and `gfx1151` (Ryzen AI Max "Strix Halo", experimental). Images on AMD use the CPU encoder only (`VISION=cpu`); one card per model.
+Host requirements: NVIDIA driver **580+** for the CUDA 13 engine (575–579 uses CUDA 12) and `nvidia-container-toolkit`; AMD needs the `amdgpu` kernel driver (the image carries the ROCm runtime), `/dev/kfd` and `/dev/dri`. The model downloads into the `strata-data` volume on the first start; later starts reuse it.
 
-Strix Halo is an APU with unified memory: the engine treats the GPU's GTT pool as its VRAM, so give it as much GTT as your BIOS/kernel allows (`ttm.pages_limit`, upstream `docs/STRIX_HALO.md`). Upstream validates gfx1151 with ROCm 7.14; this image carries 7.2.4, whose rocBLAS includes gfx1151 kernels but whose hipBLASLt has no matching tuning table, so prompt GEMMs fall back to plain hipBLAS.
+Upstream 0.2.1 settings are environment variables (`MODEL`, `FAMILY`, `MODEL_PATH`, `CONTEXT`, `PARALLEL`, `VISION`, `KV`, `GPU`/`GPUS`, `TUNE`, `API_KEY`/`API_KEY_FILE`, `PORT`, `PRESET`, `STRATA_SET`). See upstream [`docs/DOCKER.md`](https://github.com/Niko1221/Strata/blob/main/docs/DOCKER.md).
 
-### Intel Arc (SYCL) — experimental
+The 0.1.x variables (`REINSTALL`, `LOW_RAM`, `CONFIG`, `GGUF_DIR`, `LAYER_SPLIT`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `HOST`) are **ignored** by the 0.2.1 entry point. Use `MODEL_PATH` instead of `GGUF_DIR`; the data layout is now `/data/Strata-data` and `/data/install`.
 
-```sh
-docker run --rm --device /dev/dri \
-  -p 8080:8080 \
-  -v strata-data:/work/data \
-  -e MODEL=IQ2_XS \
-  ghcr.io/raboo/strata:latest-sycl
-```
+## Wrapper-only overrides
 
-Host requirements: the `xe` or `i915` kernel driver plus Intel's compute runtime (`intel-opencl-icd libze1 libze-intel-gpu1`). The data volume is `/work/data` here, not `/data`. Built as SPIR-V (JIT), so it runs on A- and B-series cards; the first start JIT-compiles kernels (~47 s). Images are not wired on Intel yet. Treat it as experimental: upstream has no Intel GPU and validates the port on community hardware.
+These are this repository's additions. The helper `docker/wrapper_env.py` is injected into the Terminal and applies them to the installed run config (`/data/install/strata-<model>.json`) on every launch — before the server starts. Values are persisted, so a later start without the variables keeps them; unset variables leave the config untouched. Invalid values abort the start with the expected range.
 
-### Common behaviour
-
-The first start downloads the model (~70 GB) into the data volume and then serves the OpenAI/Anthropic-compatible API on `:8080`. Later starts go straight to serving.
-
-- Setup choices are environment variables (`FAMILY`, `MODEL`, `CONTEXT`, `KV`, `HOST`, `PORT`, `API_KEY`, `GGUF_DIR`, ...). See the upstream Dockerfile header for the full CUDA list; the AMD and SYCL images pass the same core variables.
-- Set `-e API_KEY=<secret>` before exposing the port.
-- `-e REINSTALL=1` re-runs setup to change model settings.
-- `-e DRAFT_VOCAB=en` selects the draft layer's token subset. The default `cjk` needs up to ~348 MiB of VRAM; `en` (English and code) needs ~133 MiB, `cyrillic` ~193 MiB, `fr` ~151 MiB. The choice is stored in the model config and reused on later starts; models without an MTP draft layer ignore it.
-- Model weights are **not** baked into the images; they are downloaded at runtime.
-
-### Wrapper-only overrides
-
-These edit the model config before the server starts, so they persist on later starts (unset them to keep the last value):
-
-| Variable | Config effect |
+| Variable | Effect |
 | --- | --- |
-| `PREFILL` | `--prefill <value>` in `args` (`auto`, `auto:32768`, `2048`, ...) |
-| `CONVERSATION_CACHE_MIB` | `--conversation-cache-mib <MiB>` in `args` (positive integer, added if absent) |
+| `PREFILL` | `--prefill` in the config's `user_args` (`auto`, `auto:32768`, `2048`, ...) |
+| `CONVERSATION_CACHE_MIB` | `--conversation-cache-mib` in `user_args` (positive integer) |
 | `FIT_MAX_TOKENS` | top-level `"fit_max_tokens": true` or `false` |
 | `SAMPLING_TEMPERATURE` | `sampling.temperature` (number >= 0) |
 | `SAMPLING_TOP_P` | `sampling.top_p` (0 < value <= 1) |
@@ -93,6 +66,7 @@ These edit the model config before the server starts, so they persist on later s
 | `SAMPLING_FREQUENCY_PENALTY` | `sampling.frequency_penalty` (number >= 0) |
 | `SAMPLING_PENALTY_LAST_N` | `sampling.penalty_last_n` (integer >= 0) |
 | `SAMPLING_SEED` | `sampling.seed` (integer > 0) |
+| `DRAFT_VOCAB` | draft layer's token subset (`cjk`, `en`, `cyrillic`, `fr`); copies the subset into the MTP folder |
 
 ```sh
 docker run ... \
@@ -105,64 +79,48 @@ docker run ... \
   -e SAMPLING_MIN_P=0.0 \
   -e SAMPLING_PRESENCE_PENALTY=0.0 \
   -e SAMPLING_REPETITION_PENALTY=1.0 \
+  -e DRAFT_VOCAB=en \
   ghcr.io/raboo/strata:latest
 ```
 
-Sampling values are defaults for requests that leave the field out; a request's own value still wins. Invalid values fail the container start with the expected range. Aliases `repeat_penalty` / `repeat_last_n` are replaced by the canonical keys when overridden.
+`DRAFT_VOCAB=en` frees about 215 MiB of graphics memory (348 MiB `cjk` → 133 MiB `en`); it only applies to models with an MTP draft layer. Sampling values are defaults for requests that leave the field out; a request's own value still wins. For any other advanced setting, upstream's `STRATA_SET` (`prefill=65536 STRATA_PIN_BY_NEED=1`) still works.
 
-### Platform coverage
+## Platform coverage
 
 | Target | Available? |
 | --- | --- |
 | NVIDIA RTX 20–50 / A-series, amd64 | yes |
-| NVIDIA DGX Spark GB10, arm64 | no — upstream's CUDA engine is x86_64-only (`immintrin.h`, AVX CPU kernels) |
-| AMD Radeon RX 6000/7000/9000, amd64 | yes |
-| AMD Strix Halo (`gfx1151`), amd64 | yes (experimental upstream) |
-| Intel Arc A/B-series, amd64 | yes (experimental upstream) |
-| AMD ROCm on arm64 | no — no consumer Radeon/ROCm arm64 target |
-| Intel Arc on arm64 | no — x86-only platform |
-| NVIDIA Jetson (Orin/Thor) | no — L4T/JetPack's CUDA stack differs; upstream has no port |
-| Apple Silicon / macOS | no — Linux containers cannot use Metal |
+| NVIDIA GTX 10 / P100 / V100, amd64 | yes, through the CUDA 12 engine |
+| AMD RX 9000 / R9700, RX 7000, Strix Halo, amd64 | yes |
+| AMD RX 6000 (`gfx1030`), amd64 | not in 0.2.1 — use `0.1.45-rocm` |
+| Intel Arc A/B, amd64 | not in 0.2.1 — use `0.1.45-sycl` |
+| arm64 (DGX Spark, Grace) | no — upstream's engines are x86_64-only |
+| NVIDIA Jetson (Orin/Thor) | no — L4T/JetPack stack, no upstream port |
+| Apple Silicon / macOS | no — Metal is a native build, not a container |
 
-macOS cannot be a container target: Docker runs Linux containers in a VM without Metal GPU passthrough, and upstream's Apple Silicon support is a native build (`metal/setup_mac.py`). Upstream does have arm64 host code for the Metal backend, but it does not make the CUDA/HIP engines build on arm64: those include x86 intrinsics (`src/core/graph.cpp`, `src/kernels/cpu/*`) and only the Metal build has the compatibility layer and a portable kernel path.
+The 0.2.1 engine packages are `linux-x86_64`; the arm64 build fails in upstream's host code (`immintrin.h`, AVX kernels). The old 0.1.45 images remain available for Intel, `gfx1030`, and anyone pinning the previous series.
 
 ## How builds work
 
 `.github/workflows/publish.yml`:
 
 1. Every 6 hours (and on manual dispatch) resolves the latest upstream release; a dispatch can name any tag and force a rebuild.
-2. Builds each variant whose `ghcr.io/raboo/strata:<version><suffix>` tag does not exist yet, so the schedule is idempotent.
-3. CUDA builds upstream's `Dockerfile` (amd64, with `--portable`). ROCm and SYCL use `docker/Dockerfile.rocm` and `docker/Dockerfile.sycl` (upstream has no Dockerfile for either).
-4. Verifies every expected tag is readable in the registry, and whether anonymous pulls work (i.e. whether the package is public).
-5. For the latest release, updates the version marker at the top of this README and commits it.
+2. Builds the two backend families in parallel, skipping a family whose tag already exists.
+3. Checks out upstream at the tag, copies `docker/wrapper_env.py` into `strata_cli/launch/`, and patches `strata_cli/launch/runner.py:build_config` so the wrapper variables are applied to the installed run config (`docker/patch-terminal.py` asserts the upstream anchors).
+4. Fetches the release's signed engine packages with upstream's `docker/fetch-engines.py` (Ed25519-signed feed, SHA-256, package signatures, per-file hashes).
+5. Builds with upstream's `docker/build.sh`: the Terminal is compiled from the tag's sources, the engines are installed, and the runtime image gets upstream's entrypoint, healthcheck and `/data` layout.
+6. Smoke-tests the image (`strata --version`, wrapper module and patch present) and pushes the version, `v`-tag and `latest` (for the latest release).
+7. Verifies every tag in the registry (and anonymous pulls). For the latest release, updates the version marker at the top of this README.
 
-Scheduled workflows in public repositories are disabled after 60 days without a commit (the scheduled run itself does not count). `.github/workflows/keepalive.yml` runs weekly and commits a marker when the last commit is older than 50 days, so the release poll stays enabled even if upstream goes quiet. Re-enable a disabled workflow from the Actions tab if it was off for longer than that.
+Scheduled workflows in public repositories are disabled after 60 days without a commit (the scheduled run itself does not count). `.github/workflows/keepalive.yml` runs weekly and commits a marker when the last commit is older than 50 days.
 
-### Backend recipes and deviations
-
-- **CUDA / AVX2 CPU baseline.** Upstream's Dockerfile compiles native code for the build machine. A GitHub runner may have AVX-512, which would make the published image crash with `SIGILL` on AVX2-only CPUs — even though the entry point advertises AVX2 as the floor. The build injects `-DSTRATA_PORTABLE=ON` into both the engine and vision builds. `docker/patch-upstream.py` also exposes `DRAFT_VOCAB` and the config overrides, and limits the AVX2 warning to `x86_64`. Every upstream anchor is asserted, so an upstream change fails the build loudly.
-- **CUDA architectures** stay at upstream's default `75;80;86;89;120` (RTX 20/30/40/50 and A-series). The engine is a fat binary and picks the matching cubin at runtime. For a card outside that set, build locally with `--build-arg CUDA_ARCHITECTURES=<arch>`.
-- **ROCm** uses upstream's HIP build flags from `setup.py:build_engine_hip`, `rocm/dev-ubuntu-24.04:7.2.4`, and a fat binary for `gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx1151` (`--build-arg HIP_ARCHITECTURES=...` to narrow). `engine/BUILD.json` is written the way `setup.py` expects, so the first start reuses the engine instead of compiling. The CUDA entry point is reused unchanged.
-- **SYCL** builds upstream's `sycl/` project on its documented oneAPI/Level Zero base with JIT (`--build-arg SYCL_AOT=bmg-g31` for AOT). The port's `sycl/serve/strata-sycl.sh` normally starts a nested `strata-sycl-dev` container; the image replaces it with a direct exec and keeps data under `/work`, which is the path its setup writes into configs.
-- **Package visibility.** GHCR packages are private by default and GitHub's REST API cannot change visibility. If an anonymous pull fails, set the package to public in its [package settings](https://github.com/users/Raboo/packages/container/strata/settings) (Danger Zone → Change visibility). The `verify` job reports whether anonymous pulls work.
-
-### Rebuilding / building other tags
+### Rebuilding
 
 ```sh
-gh workflow run publish.yml --repo raboo/strata-container -f tag=v0.1.45 -f force=true
+gh workflow run publish.yml --repo raboo/strata-container -f tag=v0.2.1 -f force=true
 ```
 
-`force` rebuilds all variants (CUDA, ROCm, SYCL). To build locally, use an upstream checkout as the build context and run the same patch helper:
-
-```sh
-git clone --depth 1 --branch v0.1.45 https://github.com/Niko1221/Strata.git /tmp/strata
-cp docker/strata-env-config.py /tmp/strata/
-python3 docker/patch-upstream.py /tmp/strata --portable
-
-docker build -f /tmp/strata/Dockerfile -t strata /tmp/strata
-docker build -f docker/Dockerfile.rocm -t strata-rocm /tmp/strata
-docker build -f docker/Dockerfile.sycl -t strata-sycl /tmp/strata
-```
+`force` rebuilds both backend families. The image is assembled from upstream's release packages; there is no local `docker build` recipe in this repository. For source builds of other flavors, use upstream's `docker/build.sh` and `docs/DOCKER.md`.
 
 ## License
 
