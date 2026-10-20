@@ -7,7 +7,6 @@ on later starts; unset variables leave it untouched.
 
     PREFILL                 --prefill (engine option, user_args)
     CONVERSATION_CACHE_MIB  --conversation-cache-mib (engine option, user_args)
-    FIT_MAX_TOKENS          top-level "fit_max_tokens"
     SAMPLING_*              the "sampling" block
     DRAFT_VOCAB             the draft layer's token subset (cjk|en|cyrillic|fr);
                             also copies the subset into the MTP folder
@@ -35,7 +34,6 @@ SAMPLING = (
 )
 # llama.cpp's names for the same two settings; keeping both makes the server refuse to start
 ALIASES = {"repetition_penalty": "repeat_penalty", "penalty_last_n": "repeat_last_n"}
-BOOLS = ("1", "0", "true", "false", "yes", "no", "on", "off")
 DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin",
                 "cyrillic": "draft_vocab_cyrillic.bin", "fr": "draft_vocab_fr.bin"}
 
@@ -119,12 +117,6 @@ def apply(cfg: dict, path: Path | None = None) -> dict:
         if not cache.isdigit() or int(cache) <= 0:
             raise SystemExit(f"CONVERSATION_CACHE_MIB must be a positive integer (got {cache!r})")
         _set_user_arg(cfg, "--conversation-cache-mib", cache)
-
-    fit = env.get("FIT_MAX_TOKENS", "").strip().lower()
-    if fit:
-        if fit not in BOOLS:
-            raise SystemExit(f"FIT_MAX_TOKENS must be true or false (got {fit!r})")
-        cfg["fit_max_tokens"] = fit in ("1", "true", "yes", "on")
 
     values = _parse_sampling(env)
     if values:

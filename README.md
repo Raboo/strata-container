@@ -56,7 +56,6 @@ These are this repository's additions. The helper `docker/wrapper_env.py` is inj
 | --- | --- |
 | `PREFILL` | `--prefill` in the config's `user_args` (`auto`, `auto:32768`, `2048`, ...) |
 | `CONVERSATION_CACHE_MIB` | `--conversation-cache-mib` in `user_args` (positive integer) |
-| `FIT_MAX_TOKENS` | top-level `"fit_max_tokens": true` or `false` |
 | `SAMPLING_TEMPERATURE` | `sampling.temperature` (number >= 0) |
 | `SAMPLING_TOP_P` | `sampling.top_p` (0 < value <= 1) |
 | `SAMPLING_TOP_K` | `sampling.top_k` (integer 1..64) |
@@ -72,7 +71,6 @@ These are this repository's additions. The helper `docker/wrapper_env.py` is inj
 docker run ... \
   -e PREFILL=auto:32768 \
   -e CONVERSATION_CACHE_MIB=8192 \
-  -e FIT_MAX_TOKENS=true \
   -e SAMPLING_TEMPERATURE=1.0 \
   -e SAMPLING_TOP_P=0.95 \
   -e SAMPLING_TOP_K=20 \

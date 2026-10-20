@@ -218,13 +218,12 @@ jobs:
           cfg_path = tmp / "strata-test.json"
           cfg_path.write_text(json.dumps({"args": ["--native", "m.gguf", "--mtp", str(mtp)]}))
           os.environ.update(
-              PREFILL="auto:32768", CONVERSATION_CACHE_MIB="8192", FIT_MAX_TOKENS="true",
+              PREFILL="auto:32768", CONVERSATION_CACHE_MIB="8192",
               SAMPLING_TEMPERATURE="1.0", SAMPLING_TOP_P="0.95", SAMPLING_TOP_K="20",
               SAMPLING_MIN_P="0.0", SAMPLING_PRESENCE_PENALTY="0.0", SAMPLING_REPETITION_PENALTY="1.0",
               DRAFT_VOCAB="en")
           cfg = mod.apply(json.loads(cfg_path.read_text()), path=cfg_path)
           assert cfg["user_args"] == ["--prefill", "auto:32768", "--conversation-cache-mib", "8192"], cfg["user_args"]
-          assert cfg["fit_max_tokens"] is True
           assert cfg["sampling"]["top_k"] == 20 and cfg["sampling"]["top_p"] == 0.95
           assert cfg["draft_vocab"] == "en"
           assert (mtp / "draft_vocab.bin").stat().st_size > 0
