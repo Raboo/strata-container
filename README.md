@@ -7,7 +7,7 @@ ghcr.io/raboo/strata
 ```
 
 <!-- latest-release -->
-Current image: `ghcr.io/raboo/strata:0.2.9` (upstream release `v0.2.9`)
+Current image: `ghcr.io/raboo/strata:0.2.10` (upstream release `v0.2.10`)
 <!-- /latest-release -->
 
 ## Images
